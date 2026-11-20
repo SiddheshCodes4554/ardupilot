@@ -1944,6 +1944,46 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.set_parameter('SIM_BATT_VOLTAGE', 12.5)
         self.clear_battery_failsafe()
 
+    def BatteryFailsafeTwoStageBrakeLandRTL(self):
+        '''Two stage battery failsafe: low Brake/Land then critical RTL'''
+        self.batt_failsafe_init()
+        self.takeoffAndMoveAway()
+        self.set_parameters({
+            'BATT_FS_LOW_ACT': 7,
+            'BATT_FS_CRT_ACT': 2,
+            'SIM_BATT_VOLTAGE': 11.4,
+        })
+        self.wait_statustext("Battery 1 is low", timeout=60)
+        self.wait_mode("BRAKE")
+        self.set_parameter('SIM_BATT_VOLTAGE', 10.0)
+        self.wait_statustext("Battery 1 is critical", timeout=60)
+        self.wait_mode("RTL")
+        self.wait_landed_and_disarmed()
+
+    def BatteryFailsafeTwoStageSmartRTLDoLandStart(self):
+        '''Two stage battery failsafe: low SmartRTL then critical Auto DO_LAND_START'''
+        self.batt_failsafe_init()
+        self.takeoffAndMoveAway()
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0, 100, 50),                   # 1
+            self.create_MISSION_ITEM_INT(mavutil.mavlink.MAV_CMD_DO_LAND_START),  # 2
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0, 20, 30),                    # 3
+            (mavutil.mavlink.MAV_CMD_NAV_LAND, 0, 10, 0),                         # 4
+        ])
+        self.set_parameters({
+            'BATT_FS_LOW_ACT': 3,
+            'BATT_FS_CRT_ACT': 6,
+            'SIM_BATT_VOLTAGE': 11.4,
+        })
+        self.wait_statustext("Battery 1 is low", timeout=60)
+        self.wait_mode("SMART_RTL")
+        self.set_parameter('SIM_BATT_VOLTAGE', 10.0)
+        self.wait_statustext("Battery 1 is critical", timeout=60)
+        self.wait_mode("AUTO_RTL")
+        self.wait_current_waypoint(3)
+        self.wait_landed_and_disarmed()
+        self.reboot_sitl()  # landed away from home
+
     def BatteryFailsafeOptionsContinueLanding(self):
         '''Battery failsafe with FS_OPTIONS set to continue landing'''
         # Trigger low battery condition in land mode with FS_OPTIONS
@@ -4272,6 +4312,46 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.wait_groundspeed(0, 0.1)
 
         self.do_RTL(timeout=500)
+
+    def ToyModeDescentLimit(self):
+        '''toy mode slows a full-stick descent close to the ground'''
+        # TMODE_ENABLE 1 reads the V2450's buttons from channels 5 to
+        # 7; these have none of them pressed
+        self.set_rc_from_map({
+            5: 1500,
+            6: 1000,
+            7: 1000,
+        })
+        self.set_parameter("TMODE_ENABLE", 1)
+        self.reboot_sitl()
+        self.set_parameters({
+            "TMODE_MODE1": 2,   # start in ALT_HOLD, and stay there
+            "TMODE_MODE2": 2,
+            "TMODE_FLAGS": 0,   # no arming or disarming on throttle
+            "FLTMODE_CH": 0,    # toy mode chooses the mode
+            "PILOT_SPD_DN": 3,
+        })
+        self.reboot_sitl()
+        self.wait_mode('ALT_HOLD')
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.set_rc(3, 2000)
+        self.wait_altitude(20, 50, relative=True)
+        self.set_rc(3, 1000)
+
+        # well above the slow-down height (5m, ramping to 8m), the full
+        # descent rate
+        self.wait_climbrate(-3.2, -2.8, minimum_duration=1)
+        self.progress("descending at full rate at %.1fm" % self.get_altitude(relative=True))
+        if self.get_altitude(relative=True) < 9:
+            raise NotAchievedException("didn't reach the full descent rate above 8m")
+
+        # below 5m, throttle is held at 300 or more: a quarter of
+        # PILOT_SPD_DN with the default THR_DZ
+        self.wait_altitude(0, 4.5, relative=True)
+        self.wait_climbrate(-0.9, -0.6, minimum_duration=2, timeout=5)
+
+        self.wait_landed_and_disarmed()
 
     def LandRepositionSpeed(self):
         '''check LAND reposition speed is independent of heading, with and without SIMPLE'''
@@ -25561,6 +25641,8 @@ return update, 1000
             self.WPArcs,
             self.BatteryFailsafeTwoStage,
             self.BatteryFailsafeBrakeLand,
+            self.BatteryFailsafeTwoStageBrakeLandRTL,
+            self.BatteryFailsafeTwoStageSmartRTLDoLandStart,
             self.MinAltFenceAvoid,
             self.FenceFloorEnabledLanding,
             self.FenceUpload_MissionItem,
@@ -25632,6 +25714,7 @@ return update, 1000
             self.OSDFirstBackendFails,
             self.TestEKF3CompassFailover,
             self.EKF3SRCPerCore,
+            self.ToyModeDescentLimit,
         ])
         return ret
 
